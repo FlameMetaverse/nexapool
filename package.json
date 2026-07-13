@@ -1,0 +1,24 @@
+{
+  "name": "nexapool-indexer",
+  "version": "1.0.0",
+  "description": "NexaPool blockchain event indexer and API",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "indexer": "node src/indexer.js",
+    "api": "node src/api.js",
+    "sync:forward": "node src/sync-forward.js",
+    "sync:full": "node src/sync.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "dotenv": "^16.4.5",
+    "@supabase/supabase-js": "^2.45.0",
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  }
+}
