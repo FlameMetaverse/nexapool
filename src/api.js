@@ -1,9 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import { config } from './config.js';
-import { initDatabase, getUserStats, getAllUserStats, getRegistrationsByTimeRange } from './database.js';
+import { initDatabase, getUserStats, getAllUserStats, getRegistrationsByTimeRange, getLastProcessedBlock } from './database.js';
+import { createClient } from '@supabase/supabase-js';
 
 const app = express();
+let supabase = null;
 
 // Enable CORS for frontend
 app.use(cors());
@@ -12,6 +14,24 @@ app.use(express.json());
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Indexer status check
+app.get('/api/indexer/status', async (req, res) => {
+  try {
+    const lastBlock = await getLastProcessedBlock();
+    const totalRegs = await supabase.from('user_registrations').select('*', { count: 'exact', head: true });
+    
+    res.json({
+      lastProcessedBlock: lastBlock,
+      totalRegistrations: totalRegs.count || 0,
+      deploymentBlock: config.deploymentBlock,
+      blocksProcessed: lastBlock - config.deploymentBlock,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get stats for a specific user by address
@@ -193,11 +213,13 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
 // Start server
 function startAPIServer() {
   // Initialize database connection
+  supabase = createClient(config.supabaseUrl, config.supabaseKey);
   initDatabase();
   
   app.listen(config.port, () => {
     console.log(`🌐 API server running on http://localhost:${config.port}`);
     console.log(`   GET /health - Health check`);
+    console.log(`   GET /api/indexer/status - Indexer status`);
     console.log(`   GET /api/stats/:address - Get user stats`);
     console.log(`   GET /api/stats - Get all users`);
     console.log(`   GET /api/referrals/weekly-leaderboard - Get weekly leaderboard`);
