@@ -143,7 +143,7 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     const totalRegistrations = registrations.filter(r => r.referrer_id !== 0).length;
     const totalPool = (totalRegistrations * 0.40).toFixed(2);
     
-    // Calculate rewards for top 8
+    // Calculate rewards for top 50
     const rewardTiers = [
       { rank: 1, percentage: 20 },
       { rank: 2, percentage: 15 },
@@ -151,15 +151,19 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
       { rank: 4, percentage: 5 },
       { rank: 5, percentage: 4 },
       { rank: 6, percentage: 3 },
-      { rank: 7, percentage: 2 },
-      { rank: 8, percentage: 1 }
+      { rank: 7, percentage: 2 }
     ];
+    
+    // Ranks 8-50 get 0.95% each (43 people × 0.95% = 40.85%, total = 100%)
+    for (let rank = 8; rank <= 50; rank++) {
+      rewardTiers.push({ rank, percentage: 0.95 });
+    }
     
     const rankings = leaderboard.slice(0, 100).map((entry, index) => {
       const rank = index + 1;
       let reward = 0;
       
-      if (rank <= 8) {
+      if (rank <= 50) {
         const tier = rewardTiers[rank - 1];
         reward = ((parseFloat(totalPool) * tier.percentage) / 100).toFixed(2);
       }
