@@ -88,9 +88,306 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Get weekly referral rewards leaderboard
+// Get weekly referral leaderboard (reads events from blockchain starting yesterday)
+app.get('/api/leaderboard/weekly-referrals', async (req, res) => {
+  try {
+    const { ethers } = await import('ethers');
+    
+    // Contract ABI for events
+    const CONTRACT_ABI = [
+      "event UserRegistered(address indexed user, uint indexed userId, uint indexed referrerId, uint timestamp)",
+      "function userList(uint) view returns (address)"
+    ];
+    
+    // Connect to blockchain
+    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    const contract = new ethers.Contract(config.contractAddress, CONTRACT_ABI, provider);
+    
+    // Calculate yesterday 00:00 UTC
+    const now = new Date();
+    const yesterday = new Date(now);
+    yesterday.setUTCDate(now.getUTCDate() - 1);
+    yesterday.setUTCHours(0, 0, 0, 0);
+    const weekStartTimestamp = Math.floor(yesterday.getTime() / 1000);
+    
+    // Get current block info to estimate start block
+    const currentBlock = await provider.getBlockNumber();
+    const currentBlockData = await provider.getBlock(currentBlock);
+    const currentTimestamp = currentBlockData.timestamp;
+    
+    // Estimate block from yesterday (BSC: ~3 seconds per block)
+    const secondsSinceYesterday = currentTimestamp - weekStartTimestamp;
+    const blocksToGoBack = Math.floor(secondsSinceYesterday / 3);
+    const startBlock = Math.max(config.deploymentBlock, currentBlock - blocksToGoBack);
+    
+    console.log(`Fetching events from block ${startBlock} to ${currentBlock} (yesterday: ${new Date(weekStartTimestamp * 1000).toISOString()})`);
+    
+    // Fetch UserRegistered events from yesterday onwards
+    const filter = contract.filters.UserRegistered();
+    let events = [];
+    
+    // Fetch in batches to avoid rate limits
+    const batchSize = 5000;
+    for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += batchSize) {
+      const toBlock = Math.min(fromBlock + batchSize - 1, currentBlock);
+      
+      try {
+        const batchEvents = await contract.queryFilter(filter, fromBlock, toBlock);
+        events.push(...batchEvents);
+        console.log(`  Fetched ${batchEvents.length} events from blocks ${fromBlock}-${toBlock}`);
+        
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`Error fetching events ${fromBlock}-${toBlock}:`, error.message);
+      }
+    }
+    
+    console.log(`Total events fetched: ${events.length}`);
+    
+    // Filter events by timestamp (only from yesterday onwards)
+    const weeklyEvents = events.filter(event => {
+      const eventTimestamp = Number(event.args.timestamp);
+      return eventTimestamp >= weekStartTimestamp;
+    });
+    
+    console.log(`Events from yesterday onwards: ${weeklyEvents.length}`);
+    
+    // Aggregate by referrer
+    const referrerMap = new Map();
+    
+    for (const event of weeklyEvents) {
+      const referrerId = Number(event.args.referrerId);
+      const timestamp = Number(event.args.timestamp);
+      
+      // Skip if no referrer (referrerId = 0)
+      if (referrerId === 0) continue;
+      
+      if (!referrerMap.has(referrerId)) {
+        referrerMap.set(referrerId, {
+          referrerId: referrerId,
+          count: 0,
+          firstTimestamp: timestamp
+        });
+      }
+      
+      const data = referrerMap.get(referrerId);
+      data.count++;
+      
+      // Track earliest timestamp for tie-breaking
+      if (timestamp < data.firstTimestamp) {
+        data.firstTimestamp = timestamp;
+      }
+    }
+    
+    // Convert to array and sort
+    const leaderboard = Array.from(referrerMap.values())
+      .sort((a, b) => {
+        // Sort by count (descending)
+        if (b.count !== a.count) {
+          return b.count - a.count;
+        }
+        // Tie-breaker: earlier timestamp wins
+        return a.firstTimestamp - b.firstTimestamp;
+      });
+    
+    // Calculate weekly pool
+    const totalWeeklyRegistrations = weeklyEvents.filter(e => Number(e.args.referrerId) !== 0).length;
+    const weeklyPool = totalWeeklyRegistrations * 0.40;
+    
+    // Calculate rewards for top 8
+    const rewardTiers = [
+      { percentage: 20 },  // Rank 1
+      { percentage: 15 },  // Rank 2
+      { percentage: 10 },  // Rank 3
+      { percentage: 5 },   // Rank 4
+      { percentage: 4 },   // Rank 5
+      { percentage: 3 },   // Rank 6
+      { percentage: 2 },   // Rank 7
+      { percentage: 1 }    // Rank 8
+    ];
+    
+    // Get addresses for top referrers
+    const rankings = await Promise.all(
+      leaderboard.slice(0, 100).map(async (entry, index) => {
+        const rank = index + 1;
+        let reward = 0;
+        
+        if (rank <= 8) {
+          reward = (weeklyPool * rewardTiers[rank - 1].percentage) / 100;
+        }
+        
+        // Get referrer address
+        let referrerAddress = null;
+        try {
+          referrerAddress = await contract.userList(entry.referrerId);
+        } catch (error) {
+          console.error(`Error getting address for user ${entry.referrerId}:`, error.message);
+        }
+        
+        return {
+          rank,
+          referrerId: entry.referrerId,
+          referrerAddress,
+          weeklyReferrals: entry.count,
+          estimatedReward: parseFloat(reward.toFixed(2))
+        };
+      })
+    );
+    
+    res.json({
+      timestamp: new Date().toISOString(),
+      weekStart: weekStartTimestamp,
+      weekStartReadable: new Date(weekStartTimestamp * 1000).toISOString(),
+      totalWeeklyRegistrations,
+      weeklyPool: parseFloat(weeklyPool.toFixed(2)),
+      leaderboard: rankings
+    });
+    
+  } catch (error) {
+    console.error('API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Get direct referral leaderboard (all-time, reads directly from contract)
+app.get('/api/leaderboard/direct-referrals', async (req, res) => {
+  try {
+    const { ethers } = await import('ethers');
+    
+    // Simple contract ABI
+    const CONTRACT_ABI = [
+      "function currUserId() view returns (uint)",
+      "function users(address) view returns (bool exists, uint id, uint referrerId, uint directs, uint referralEarnings, uint totalTeam, uint totalEarned)",
+      "function userList(uint) view returns (address)"
+    ];
+    
+    // Connect to blockchain
+    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    const contract = new ethers.Contract(config.contractAddress, CONTRACT_ABI, provider);
+    
+    // Get total users
+    const totalUsers = Number(await contract.currUserId());
+    
+    const leaderboard = [];
+    
+    // Read users in batches
+    const batchSize = 10;
+    for (let userId = 1; userId <= totalUsers; userId += batchSize) {
+      const batchEnd = Math.min(userId + batchSize, totalUsers);
+      
+      const promises = [];
+      for (let id = userId; id <= batchEnd; id++) {
+        promises.push(
+          (async () => {
+            try {
+              const userAddress = await contract.userList(id);
+              if (!userAddress || userAddress === ethers.ZeroAddress) return null;
+              
+              const userData = await contract.users(userAddress);
+              const directs = Number(userData[3]);
+              
+              if (directs === 0) return null;
+              
+              return {
+                userId: id,
+                address: userAddress,
+                directs,
+                totalTeam: Number(userData[5])
+              };
+            } catch (error) {
+              return null;
+            }
+          })()
+        );
+      }
+      
+      const results = await Promise.all(promises);
+      leaderboard.push(...results.filter(r => r !== null));
+      
+      // Delay to avoid rate limits
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+    
+    // Sort by directs (descending)
+    leaderboard.sort((a, b) => b.directs - a.directs);
+    
+    // Return top 100
+    const top100 = leaderboard.slice(0, 100).map((user, index) => ({
+      rank: index + 1,
+      userId: user.userId,
+      address: user.address,
+      directReferrals: user.directs,
+      totalTeam: user.totalTeam
+    }));
+    
+    res.json({
+      timestamp: new Date().toISOString(),
+      totalUsers,
+      usersWithReferrals: leaderboard.length,
+      leaderboard: top100
+    });
+    
+  } catch (error) {
+    console.error('API error:', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+// Get live events for activity banner (last 50 registrations)
+app.get('/api/live-events', async (req, res) => {
+  try {
+    // Set cache headers - cache for 10 seconds
+    res.setHeader('Cache-Control', 'public, max-age=10');
+    
+    console.log(`🌐 API Request: /api/live-events at ${new Date().toISOString()}`);
+    
+    // Fetch last 50 registrations from database
+    const { data, error } = await supabase
+      .from('user_registrations')
+      .select('user_address, user_id, referrer_id, block_timestamp, transaction_hash')
+      .order('block_timestamp', { ascending: false })
+      .limit(50);
+    
+    if (error) {
+      console.error('❌ Error fetching live events:', error);
+      return res.status(500).json({ error: 'Failed to fetch events' });
+    }
+    
+    // Format events for frontend
+    const events = (data || []).map(reg => ({
+      type: 'registration',
+      message: `ID ${reg.user_id} just joined NexaPool!`,
+      emoji: '🎉',
+      timestamp: reg.block_timestamp,
+      userId: reg.user_id,
+      txHash: reg.transaction_hash
+    }));
+    
+    console.log(`   Returning ${events.length} events`);
+    
+    res.json({
+      success: true,
+      events,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ API error in /api/live-events:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get weekly referral rewards leaderboard (database-based - requires indexer)
 app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
   try {
+    // Disable caching to ensure fresh data on every request
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    console.log(`🌐 API Request: /api/referrals/weekly-leaderboard at ${new Date().toISOString()}`);
+    
     // Calculate Monday 00:00 UTC for current week
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday
@@ -105,6 +402,8 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     const nextMonday = new Date(monday);
     nextMonday.setUTCDate(monday.getUTCDate() + 7);
     const weekEndTimestamp = Math.floor(nextMonday.getTime() / 1000);
+    
+    console.log(`   Week range: ${new Date(weekStartTimestamp * 1000).toISOString()} to ${new Date(weekEndTimestamp * 1000).toISOString()}`);
     
     // Fetch registrations for this week
     const registrations = await getRegistrationsByTimeRange(weekStartTimestamp);
@@ -196,6 +495,8 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
       };
     });
     
+    console.log(`   Returning ${rankings.length} rankings, total pool: $${totalPool}, total registrations: ${totalRegistrations}`);
+    
     res.json({
       weekStart: weekStartTimestamp,
       weekEnd: weekEndTimestamp,
@@ -205,7 +506,7 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('API error:', error);
+    console.error('❌ API error in /api/referrals/weekly-leaderboard:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -222,7 +523,10 @@ function startAPIServer() {
     console.log(`   GET /api/indexer/status - Indexer status`);
     console.log(`   GET /api/stats/:address - Get user stats`);
     console.log(`   GET /api/stats - Get all users`);
-    console.log(`   GET /api/referrals/weekly-leaderboard - Get weekly leaderboard`);
+    console.log(`   GET /api/live-events - Live activity events (last 50 registrations)`);
+    console.log(`   GET /api/leaderboard/weekly-referrals - Weekly leaderboard (from yesterday)`);
+    console.log(`   GET /api/leaderboard/direct-referrals - All-time direct referrals`);
+    console.log(`   GET /api/referrals/weekly-leaderboard - Weekly leaderboard (from database)`);
   });
 }
 
