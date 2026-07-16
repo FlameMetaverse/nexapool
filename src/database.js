@@ -24,7 +24,7 @@ let memoryStore = {
   lastBlock: config.deploymentBlock
 };
 
-export async function saveUserStats(address, userId, referrerId, totalTeam, totalEarned) {
+export async function saveUserStats(address, userId, referrerId, totalTeam, totalEarned, directs = 0) {
   if (supabase) {
     const { data, error } = await supabase
       .from('user_stats')
@@ -34,6 +34,7 @@ export async function saveUserStats(address, userId, referrerId, totalTeam, tota
         referrer_id: referrerId,
         total_team: totalTeam,
         total_earned: totalEarned,
+        directs: directs,
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'address'
@@ -51,6 +52,7 @@ export async function saveUserStats(address, userId, referrerId, totalTeam, tota
       referrerId,
       totalTeam,
       totalEarned,
+      directs,
       updatedAt: Date.now()
     });
   }
@@ -85,8 +87,10 @@ export async function getUserStats(address) {
 }
 
 export async function saveLastProcessedBlock(blockNumber) {
+  console.log(`💾 Attempting to save last_block: ${blockNumber}`);
+  
   if (supabase) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('indexer_state')
       .upsert({
         id: 1,
@@ -94,14 +98,19 @@ export async function saveLastProcessedBlock(blockNumber) {
         updated_at: new Date().toISOString()
       }, {
         onConflict: 'id'
-      });
+      })
+      .select(); // Add .select() to return the updated row
     
     if (error) {
-      console.error('Database error:', error);
+      console.error('❌ Database error saving last_block:', error);
+      console.error('   Error details:', JSON.stringify(error, null, 2));
       throw error;
     }
+    
+    console.log(`✅ Successfully saved last_block: ${blockNumber}`, data);
   } else {
     memoryStore.lastBlock = blockNumber;
+    console.log(`✅ Saved to memory: ${blockNumber}`);
   }
 }
 
@@ -151,6 +160,9 @@ export async function getAllUserStats() {
 
 // Save a user registration event (for weekly leaderboard)
 export async function saveUserRegistration(userAddress, userId, referrerId, blockNumber, blockTimestamp, txHash) {
+  console.log(`💾 Saving registration: userId=${userId}, referrerId=${referrerId}, block=${blockNumber}`);
+  console.log(`   Timestamp: ${blockTimestamp} seconds (${new Date(blockTimestamp * 1000).toISOString()})`);
+  
   if (supabase) {
     const { data, error } = await supabase
       .from('user_registrations')
@@ -167,11 +179,15 @@ export async function saveUserRegistration(userAddress, userId, referrerId, bloc
     if (error) {
       // Ignore duplicate key errors (event already saved)
       if (error.code === '23505') { // PostgreSQL duplicate key error
+        console.log(`   ℹ️  Registration already exists (duplicate): userId=${userId}`);
         return null;
       }
-      console.error('Database error saving registration:', error);
+      console.error('❌ Database error saving registration:', error);
+      console.error('   Error details:', JSON.stringify(error, null, 2));
       throw error;
     }
+    
+    console.log(`✅ Registration saved successfully: userId=${userId}`);
     return data;
   }
   return null;
@@ -179,6 +195,12 @@ export async function saveUserRegistration(userAddress, userId, referrerId, bloc
 
 // Get user registrations within a time range (for weekly leaderboard)
 export async function getRegistrationsByTimeRange(fromTimestamp, toTimestamp = null) {
+  console.log(`🔍 Query registrations: fromTimestamp=${fromTimestamp}, toTimestamp=${toTimestamp}`);
+  console.log(`   From date: ${new Date(fromTimestamp * 1000).toISOString()}`);
+  if (toTimestamp) {
+    console.log(`   To date: ${new Date(toTimestamp * 1000).toISOString()}`);
+  }
+  
   if (supabase) {
     let query = supabase
       .from('user_registrations')
@@ -194,8 +216,15 @@ export async function getRegistrationsByTimeRange(fromTimestamp, toTimestamp = n
     const { data, error } = await query;
     
     if (error) {
-      console.error('Database error fetching registrations:', error);
+      console.error('❌ Database error fetching registrations:', error);
+      console.error('   Error details:', JSON.stringify(error, null, 2));
       throw error;
+    }
+    
+    console.log(`✅ Query returned ${data?.length || 0} registrations`);
+    if (data && data.length > 0) {
+      console.log(`   First registration: ${new Date(data[0].block_timestamp * 1000).toISOString()}`);
+      console.log(`   Last registration: ${new Date(data[data.length - 1].block_timestamp * 1000).toISOString()}`);
     }
     
     return data || [];

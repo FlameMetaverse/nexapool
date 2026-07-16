@@ -73,7 +73,8 @@ async function syncBlockchain() {
     }
     
     const blocksToSync = currentBlock - lastProcessed;
-    console.log(`🔍 Syncing ${blocksToSync} blocks...`);
+    const blocksBehind = currentBlock - lastProcessed;
+    console.log(`🔍 Syncing ${blocksToSync} blocks (${blocksBehind.toLocaleString()} blocks behind)...`);
     
     // Fetch UserRegistered events
     console.log('📥 Fetching UserRegistered events...');
@@ -105,6 +106,15 @@ async function syncBlockchain() {
     
     // Save last processed block
     await saveLastProcessedBlock(currentBlock);
+    
+    // Verify it was saved
+    const verifyBlock = await getLastProcessedBlock();
+    console.log(`🔍 Verification: last_block is now ${verifyBlock}`);
+    
+    if (verifyBlock !== currentBlock) {
+      console.error(`❌ CRITICAL: State not persisted! Expected ${currentBlock}, got ${verifyBlock}`);
+    }
+    
     console.log(`✅ Sync complete! Processed up to block ${currentBlock}`);
     
   } catch (error) {

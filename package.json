@@ -5,20 +5,27 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/weekly-sync.js",
     "indexer": "node src/indexer.js",
     "api": "node src/api.js",
     "sync:forward": "node src/sync-forward.js",
-    "sync:full": "node src/sync.js"
+    "sync:full": "node src/sync.js",
+    "test": "mocha test/**/*.test.js --timeout 60000",
+    "test:preservation": "mocha test/preservation.test.js --timeout 60000"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
-    "dotenv": "^16.4.5",
     "@supabase/supabase-js": "^2.45.0",
-    "express": "^4.19.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "chai": "^6.2.2",
+    "fast-check": "^4.9.0",
+    "mocha": "^11.7.6"
   }
 }

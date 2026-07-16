@@ -7,8 +7,8 @@ const __dirname = dirname(__filename);
 
 console.log('🚀 Starting NexaPool Backend...\n');
 
-// Start the indexer in the background
-const indexerProcess = spawn('node', [join(__dirname, 'indexer.js')], {
+// Start the STORAGE-BASED indexer in the background (no event scanning!)
+const indexerProcess = spawn('node', [join(__dirname, 'storage-indexer.js')], {
   stdio: 'pipe',
   shell: true
 });
