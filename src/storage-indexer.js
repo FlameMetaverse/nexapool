@@ -108,39 +108,53 @@ async function processUser(contract, userId, currentBlock) {
       return false;
     }
     
-    // Get user data
+    // Get user data from storage (NO RATE LIMIT!)
     const userData = await contract.users(userAddress);
     
-    // userData returns: (bool exists, uint id, uint referrerId, uint directs, uint referralEarnings, uint totalTeam, uint totalEarned)
     const exists = userData[0];
     const id = Number(userData[1]);
     const referrerId = Number(userData[2]);
     const directs = Number(userData[3]);
     const totalTeam = Number(userData[5]);
-    const totalEarned = Number(userData[6]) / 1e18; // Convert from wei to USDT
+    const totalEarned = Number(userData[6]) / 1e18;
     
     if (!exists || id !== userId) {
       return false;
     }
     
-    // Estimate timestamp based on user ID
-    // Assuming roughly 1 user every 3 seconds on average
-    // This is just an approximation for the weekly leaderboard
-    const now = Math.floor(Date.now() / 1000);
-    const totalUsers = Number(await contract.currUserId());
-    const estimatedTimestamp = now - ((totalUsers - userId) * 3);
+    // Now get REAL registration timestamp from the UserRegistered event for THIS user only
+    let registrationTimestamp;
+    try {
+      const filter = contract.filters.UserRegistered(userAddress, userId);
+      const events = await contract.queryFilter(filter, config.deploymentBlock, currentBlock);
+      
+      if (events.length > 0) {
+        // Got the real timestamp!
+        registrationTimestamp = Number(events[0].args.timestamp);
+      } else {
+        // Fallback to estimation if event not found
+        const now = Math.floor(Date.now() / 1000);
+        const totalUsers = Number(await contract.currUserId());
+        registrationTimestamp = now - ((totalUsers - userId) * 3);
+      }
+    } catch (error) {
+      // Rate limit or error - use estimation
+      const now = Math.floor(Date.now() / 1000);
+      const totalUsers = Number(await contract.currUserId());
+      registrationTimestamp = now - ((totalUsers - userId) * 3);
+    }
     
-    // Save registration to database
+    // Save registration with REAL timestamp
     await saveUserRegistration(
       userAddress,
       userId,
       referrerId,
-      currentBlock, // We don't have exact block, use current
-      estimatedTimestamp,
-      `storage-sync-${userId}` // Fake tx hash since we're reading from storage
+      currentBlock,
+      registrationTimestamp, // REAL or estimated
+      `storage-sync-${userId}`
     );
     
-    // Save user stats (includes directs count!)
+    // Save user stats
     await saveUserStats(userAddress, userId, referrerId, totalTeam, totalEarned, directs);
     
     return true;
