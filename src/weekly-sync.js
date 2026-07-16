@@ -48,56 +48,75 @@ async function syncWeeklyEvents() {
       return;
     }
     
-    // Fetch events in batches
-    const batchSize = 5000; // BSC can handle 5000 blocks
+    // Fetch events in batches - SMALL batches to avoid rate limits!
+    const batchSize = 1000; // Smaller batches for free RPC
+    const maxRetries = 3;
     let totalEventsSaved = 0;
     
     for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += batchSize) {
       const toBlock = Math.min(fromBlock + batchSize - 1, currentBlock);
       console.log(`📦 Processing blocks ${fromBlock} to ${toBlock}...`);
       
-      try {
-        const filter = contract.filters.UserRegistered();
-        const events = await contract.queryFilter(filter, fromBlock, toBlock);
-        
-        console.log(`   Found ${events.length} events`);
-        
-        for (const event of events) {
-          const userAddress = event.args.user;
-          const userId = Number(event.args.userId);
-          const referrerId = Number(event.args.referrerId);
-          const timestamp = Number(event.args.timestamp);
-          const blockNumber = event.blockNumber;
-          const txHash = event.transactionHash;
+      let retryCount = 0;
+      let success = false;
+      
+      while (retryCount < maxRetries && !success) {
+        try {
+          const filter = contract.filters.UserRegistered();
+          const events = await contract.queryFilter(filter, fromBlock, toBlock);
           
-          // Save to database
-          try {
-            await saveUserRegistration(
-              userAddress,
-              userId,
-              referrerId,
-              blockNumber,
-              timestamp, // REAL timestamp from blockchain event!
-              txHash
-            );
-            totalEventsSaved++;
-          } catch (error) {
-            // Ignore duplicate errors
-            if (error.code !== '23505') {
-              console.error(`   ⚠️  Error saving userId ${userId}:`, error.message);
+          console.log(`   Found ${events.length} events`);
+          
+          for (const event of events) {
+            const userAddress = event.args.user;
+            const userId = Number(event.args.userId);
+            const referrerId = Number(event.args.referrerId);
+            const timestamp = Number(event.args.timestamp);
+            const blockNumber = event.blockNumber;
+            const txHash = event.transactionHash;
+            
+            // Save to database
+            try {
+              await saveUserRegistration(
+                userAddress,
+                userId,
+                referrerId,
+                blockNumber,
+                timestamp, // REAL timestamp from blockchain event!
+                txHash
+              );
+              totalEventsSaved++;
+            } catch (error) {
+              // Ignore duplicate errors
+              if (error.code !== '23505') {
+                console.error(`   ⚠️  Error saving userId ${userId}:`, error.message);
+              }
             }
           }
+          
+          // Update progress
+          await saveLastProcessedBlock(toBlock);
+          success = true;
+          
+        } catch (error) {
+          retryCount++;
+          if (error.message && error.message.includes('rate limit')) {
+            console.error(`   ⚠️  Rate limit hit, retry ${retryCount}/${maxRetries}...`);
+            // Exponential backoff: wait longer each retry
+            await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+          } else {
+            console.error(`   ❌ Error processing blocks ${fromBlock}-${toBlock}:`, error.message);
+            break; // Don't retry non-rate-limit errors
+          }
         }
-        
-        // Update progress
-        await saveLastProcessedBlock(toBlock);
-        
-      } catch (error) {
-        console.error(`   ❌ Error processing blocks ${fromBlock}-${toBlock}:`, error.message);
       }
       
-      // Small delay to avoid rate limits
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!success) {
+        console.error(`   ❌ Failed after ${maxRetries} retries, skipping blocks ${fromBlock}-${toBlock}`);
+      }
+      
+      // Longer delay between batches to respect rate limits
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
     
     console.log(`✅ Sync complete! Saved ${totalEventsSaved} new events, now at block ${currentBlock}`);
