@@ -7,8 +7,8 @@ const __dirname = dirname(__filename);
 
 console.log('🚀 Starting NexaPool Backend...\n');
 
-// Start the STORAGE-BASED indexer in the background (no event scanning!)
-const indexerProcess = spawn('node', [join(__dirname, 'storage-indexer.js')], {
+// Start the EVENT-BASED indexer in the background (reads real timestamps from blockchain events!)
+const indexerProcess = spawn('node', [join(__dirname, 'weekly-sync.js')], {
   stdio: 'pipe',
   shell: true
 });
