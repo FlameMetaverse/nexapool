@@ -414,7 +414,7 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     ];
     
     // Connect to blockchain
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    const provider = new ethers.JsonRpcProvider(config.bscRpcUrl);
     const contract = new ethers.Contract(config.contractAddress, CONTRACT_ABI, provider);
     
     // Calculate Monday 00:00 UTC for current week
