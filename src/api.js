@@ -402,21 +402,9 @@ app.get('/api/live-events', async (req, res) => {
   }
 });
 
-// Get weekly referral rewards leaderboard (blockchain-based - ignores database)
+// Get weekly referral rewards leaderboard (temporary: returns empty until real registrations)
 app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
   try {
-    const { ethers } = await import('ethers');
-    
-    // Contract ABI for events
-    const CONTRACT_ABI = [
-      "event UserRegistered(address indexed user, uint indexed userId, uint indexed referrerId, uint timestamp)",
-      "function userList(uint) view returns (address)"
-    ];
-    
-    // Connect to blockchain
-    const provider = new ethers.JsonRpcProvider(config.bscRpcUrl);
-    const contract = new ethers.Contract(config.contractAddress, CONTRACT_ABI, provider);
-    
     // Calculate Monday 00:00 UTC for current week
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday
@@ -432,97 +420,62 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     nextMonday.setUTCDate(monday.getUTCDate() + 7);
     const weekEndTimestamp = Math.floor(nextMonday.getTime() / 1000);
     
-    // Get current block info to estimate start block
-    const currentBlock = await provider.getBlockNumber();
-    const currentBlockData = await provider.getBlock(currentBlock);
-    const currentTimestamp = currentBlockData.timestamp;
+    console.log(`🌐 Weekly leaderboard request: ${new Date(weekStartTimestamp * 1000).toISOString()} to ${new Date(weekEndTimestamp * 1000).toISOString()}`);
     
-    // Estimate block from Monday 00:00 UTC (BSC: ~3 seconds per block)
-    const secondsSinceMonday = currentTimestamp - weekStartTimestamp;
-    const blocksToGoBack = Math.floor(secondsSinceMonday / 3);
-    const startBlock = Math.max(config.deploymentBlock, currentBlock - blocksToGoBack);
+    const registrations = await getRegistrationsByTimeRange(weekStartTimestamp, weekEndTimestamp);
     
-    console.log(`Fetching events from block ${startBlock} to ${currentBlock}`);
-    console.log(`  Week: ${new Date(weekStartTimestamp * 1000).toISOString()} to ${new Date(weekEndTimestamp * 1000).toISOString()}`);
-    
-    // Fetch UserRegistered events from Monday onwards
-    const filter = contract.filters.UserRegistered();
-    let events = [];
-    
-    // Fetch in batches to avoid rate limits
-    const batchSize = 5000;
-    for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += batchSize) {
-      const toBlock = Math.min(fromBlock + batchSize - 1, currentBlock);
-      
-      try {
-        const batchEvents = await contract.queryFilter(filter, fromBlock, toBlock);
-        events.push(...batchEvents);
-        console.log(`  Fetched ${batchEvents.length} events from blocks ${fromBlock}-${toBlock}`);
-        
-        // Small delay to avoid rate limits
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (error) {
-        console.error(`Error fetching events ${fromBlock}-${toBlock}:`, error.message);
-      }
-    }
-    
-    console.log(`Total events fetched from blockchain: ${events.length}`);
-    
-    // Filter events to include ONLY registrations from Monday 00:00 UTC onwards
-    const weeklyEvents = events.filter(event => {
-      const eventTimestamp = Number(event.args.timestamp);
-      return eventTimestamp >= weekStartTimestamp && eventTimestamp < weekEndTimestamp;
-    });
-    
-    console.log(`Events within current week: ${weeklyEvents.length}`);
-    
-    if (weeklyEvents.length > 0) {
-      const firstEvent = weeklyEvents[0];
-      const lastEvent = weeklyEvents[weeklyEvents.length - 1];
-      console.log(`  First event: ${new Date(Number(firstEvent.args.timestamp) * 1000).toISOString()}`);
-      console.log(`  Last event: ${new Date(Number(lastEvent.args.timestamp) * 1000).toISOString()}`);
-    }
+    console.log(`   Found ${registrations.length} registrations this week`);
     
     // Aggregate by referrer
     const referrerMap = new Map();
     
-    for (const event of weeklyEvents) {
-      const referrerId = Number(event.args.referrerId);
-      const timestamp = Number(event.args.timestamp);
+    for (const reg of registrations) {
+      const referrerId = reg.referrer_id;
       
-      // Skip if no referrer (referrerId = 0)
+      // Skip if no referrer (referrer_id = 0)
       if (referrerId === 0) continue;
       
       if (!referrerMap.has(referrerId)) {
         referrerMap.set(referrerId, {
           referrerId: referrerId,
-          count: 0,
-          firstTimestamp: timestamp
+          registrations: [],
+          count: 0
         });
       }
       
       const data = referrerMap.get(referrerId);
+      data.registrations.push({
+        userAddress: reg.user_address,
+        userId: reg.user_id,
+        timestamp: reg.block_timestamp
+      });
       data.count++;
-      
-      // Track earliest timestamp for tie-breaking
-      if (timestamp < data.firstTimestamp) {
-        data.firstTimestamp = timestamp;
-      }
     }
     
-    // Convert to array and sort
+    // Convert to array and sort by count (descending), then by earliest timestamp
     const leaderboard = Array.from(referrerMap.values())
+      .map(data => {
+        // Sort registrations by timestamp to get earliest
+        const sortedRegs = data.registrations.sort((a, b) => a.timestamp - b.timestamp);
+        const earliestTimestamp = sortedRegs[0].timestamp;
+        
+        return {
+          referrerId: data.referrerId,
+          referralCount: data.count,
+          earliestTimestamp: earliestTimestamp
+        };
+      })
       .sort((a, b) => {
         // Sort by count (descending)
-        if (b.count !== a.count) {
-          return b.count - a.count;
+        if (b.referralCount !== a.referralCount) {
+          return b.referralCount - a.referralCount;
         }
         // Tie-breaker: earlier timestamp wins
-        return a.firstTimestamp - b.firstTimestamp;
+        return a.earliestTimestamp - b.earliestTimestamp;
       });
     
     // Calculate total pool
-    const totalRegistrations = weeklyEvents.filter(e => Number(e.args.referrerId) !== 0).length;
+    const totalRegistrations = registrations.filter(r => r.referrer_id !== 0).length;
     const totalPool = (totalRegistrations * 0.40).toFixed(2);
     
     // Calculate rewards for top 50
@@ -553,12 +506,12 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
       return {
         rank,
         referrerId: entry.referrerId,
-        referralCount: entry.count,
+        referralCount: entry.referralCount,
         reward: parseFloat(reward)
       };
     });
     
-    console.log(`   Returning ${rankings.length} rankings, total pool: $${totalPool}, total registrations: ${totalRegistrations}`);
+    console.log(`   Returning ${rankings.length} rankings, total pool: $${totalPool}`);
     
     res.json({
       weekStart: weekStartTimestamp,
