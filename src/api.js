@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { config } from './config.js';
-import { initDatabase, getUserStats, getAllUserStats, getRegistrationsByTimeRange, getLastProcessedBlock } from './database.js';
+import { initDatabase, getUserStats, getAllUserStats, getRegistrationsByTimeRange, getLastProcessedBlock, getBaselineUserId } from './database.js';
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
@@ -411,6 +411,10 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
       return res.status(500).json({ error: 'Database not initialized' });
     }
     
+    // Get baseline user ID (ignore users registered before this ID)
+    const baselineUserId = await getBaselineUserId();
+    console.log(`🎯 Baseline user ID: ${baselineUserId} (only counting users with ID > ${baselineUserId})`);
+    
     // Calculate Monday 00:00 UTC for current week
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday
@@ -430,16 +434,24 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
     
     const registrations = await getRegistrationsByTimeRange(weekStartTimestamp, weekEndTimestamp);
     
-    console.log(`   Found ${registrations.length} registrations this week`);
+    // Filter out users registered BEFORE the baseline
+    const newRegistrations = registrations.filter(reg => reg.user_id > baselineUserId);
+    
+    console.log(`   Found ${registrations.length} total registrations this week`);
+    console.log(`   Filtered to ${newRegistrations.length} NEW registrations (user_id > ${baselineUserId})`);
     
     // Aggregate by referrer
     const referrerMap = new Map();
     
-    for (const reg of registrations) {
+    for (const reg of newRegistrations) {
       const referrerId = reg.referrer_id;
       
       // Skip if no referrer (referrer_id = 0)
       if (referrerId === 0) continue;
+      
+      // ALSO skip if referrer is below baseline (old user referring new users)
+      // We only want NEW users in the leaderboard
+      if (referrerId <= baselineUserId) continue;
       
       if (!referrerMap.has(referrerId)) {
         referrerMap.set(referrerId, {
@@ -480,8 +492,8 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
         return a.earliestTimestamp - b.earliestTimestamp;
       });
     
-    // Calculate total pool
-    const totalRegistrations = registrations.filter(r => r.referrer_id !== 0).length;
+    // Calculate total pool (only NEW registrations count)
+    const totalRegistrations = newRegistrations.filter(r => r.referrer_id > baselineUserId).length;
     const totalPool = (totalRegistrations * 0.40).toFixed(2);
     
     // Calculate rewards for top 50
@@ -524,6 +536,7 @@ app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
       weekEnd: weekEndTimestamp,
       totalRegistrations,
       totalPool: parseFloat(totalPool),
+      baselineUserId,  // Include in response so frontend knows the cutoff
       rankings
     });
     

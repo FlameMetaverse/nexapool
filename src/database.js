@@ -133,6 +133,26 @@ export async function getLastProcessedBlock() {
   }
 }
 
+// Get baseline user ID (users registered before this ID are ignored in weekly leaderboard)
+export async function getBaselineUserId() {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('indexer_state')
+      .select('baseline_user_id')
+      .eq('id', 1)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') {
+      console.error('Database error:', error);
+      throw error;
+    }
+    
+    return data?.baseline_user_id || 0;
+  } else {
+    return 0;
+  }
+}
+
 export async function getAllUserStats() {
   if (supabase) {
     const { data, error } = await supabase
