@@ -405,6 +405,12 @@ app.get('/api/live-events', async (req, res) => {
 // Get weekly referral rewards leaderboard (temporary: returns empty until real registrations)
 app.get('/api/referrals/weekly-leaderboard', async (req, res) => {
   try {
+    // Check if supabase is initialized
+    if (!supabase) {
+      console.error('❌ Supabase not initialized in /api/referrals/weekly-leaderboard');
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    
     // Calculate Monday 00:00 UTC for current week
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday
